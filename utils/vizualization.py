@@ -3,14 +3,15 @@ from scipy.stats import norm
 import numpy as np
 import math
 import pandas as pd
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.metrics.pairwise import euclidean_distances
+from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 from sklearn.linear_model import Perceptron
 import seaborn as sns
-from sklearn.metrics import accuracy_score
-
+from sklearn.metrics import accuracy_score, v_measure_score, silhouette_score
+from sklearn.cluster import KMeans
+from scipy.spatial.distance import euclidean
+from math import atan2
 
 from data_processing import *
 
@@ -903,3 +904,145 @@ def create_similarity_heatmap(df, similarity_type):
     plt.show()
 
 
+
+def v_measure_cluster_analysis(mwe, data_df):
+    fig, axs = plt.subplots(nrows=4, ncols=4, figsize=(20, 16))
+    axs = axs.flatten()
+
+    v_measure_scores = []
+    all_points = []
+    distances = []
+
+    for layer_id, ax in zip(range(13), axs):
+        data_df = retrieve_encoded_df(data_df, batch_size=32, layer_id=layer_id, normalize=True, print_ignored=False)
+        mwe_df = data_df[data_df['mwe'] == mwe].copy()
+
+        filtered_df = mwe_df[mwe_df['literal_embedding'].notna()]
+        X_C = np.array([combine_embeddings(emb1, emb2, "concatenation") for emb1, emb2 in filtered_df['literal_embedding']])
+
+        filtered_df = mwe_df[mwe_df['idiomatic_embedding'].notna()]
+        X_NC = np.array([combine_embeddings(emb1, emb2, "concatenation") for emb1, emb2 in filtered_df['idiomatic_embedding']])
+
+        X = np.vstack((X_C, X_NC))
+        all_points.append(X)
+
+        pca = PCA(n_components=2)
+        points = pca.fit_transform(X)
+
+        kmeans = KMeans(n_clusters=2, random_state=42, n_init=20)
+        labels = kmeans.fit_predict(points)
+
+        true_labels = np.concatenate((np.zeros(len(X_C)), np.ones(len(X_NC))))
+        v_measure_avg = v_measure_score(true_labels, labels)
+        v_measure_scores.append(v_measure_avg)
+
+        ax.scatter(points[:len(X_C), 0], points[:len(X_C), 1], color='blue', label='Compositional')
+        ax.scatter(points[len(X_C):, 0], points[len(X_C):, 1], color='orange', label='Non-compositional')
+
+        # Draw a line between the cluster centers
+        center_0, center_1 = kmeans.cluster_centers_
+        ax.plot([center_0[0], center_1[0]], [center_0[1], center_1[1]], 'k-')
+
+        # Calculate and display the distance between the centers
+        distance = euclidean(center_0, center_1)
+        distances.append(distance)
+
+        # Determine the midpoint of the line
+        midpoint_x = (center_0[0] + center_1[0]) / 2
+        midpoint_y = (center_0[1] + center_1[1]) / 2
+
+        # Calculate the angle of the line
+        angle = atan2(center_1[1] - center_0[1], center_1[0] - center_0[0])
+        
+        # Adjust text position above the line
+        offset = 0.5  # You can adjust this offset value
+        text_x = midpoint_x - offset * np.sin(angle)
+        text_y = midpoint_y + offset * np.cos(angle)
+
+        # Display the distance text above the line
+        ax.text(text_x, text_y, f"{distance:.2f}", fontsize=15, ha='center', va='bottom')
+
+        ax.scatter(kmeans.cluster_centers_[:, 0], kmeans.cluster_centers_[:, 1], color='red', marker='x', s=100, label='Cluster Centers')
+        ax.set_xlabel('1st eigenvector')
+        ax.set_ylabel('2nd eigenvector')
+        ax.set_title(f"Layer {layer_id}")
+        ax.legend()
+
+    # Get the overall minimum and maximum values for x and y
+    all_points = np.vstack(all_points)
+    x_min, x_max = np.min(all_points[:, 0]), np.max(all_points[:, 0])
+    y_min, y_max = np.min(all_points[:, 1]), np.max(all_points[:, 1])
+
+    # Add a buffer to the limits
+    x_range = x_max - x_min
+    y_range = y_max - y_min
+    buffer = 4.5  # Adjust this buffer value as needed
+    x_min -= buffer * x_range
+    x_max += buffer * x_range
+    y_min -= buffer * y_range
+    y_max += buffer * y_range
+
+    # Set the same x and y limits for all subplots
+    for ax in axs[:13]:
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(y_min, y_max)
+
+    # Hide the frames of subplots 14, 15, and 16
+    for ax in axs[13:]:
+        ax.set_visible(False)
+
+    fig.suptitle(f"V-measure Clustering of '{mwe}' Embeddings Across Layers")
+    plt.tight_layout()
+    plt.savefig(f"../results/plots/V-measure Clustering of '{mwe}' Embeddings Across Layers.png")
+    plt.show()
+
+    return v_measure_scores, distances
+
+
+
+
+def silhouette_score_cluster_analysis(mwe, data_df):
+    fig, axs = plt.subplots(nrows=4, ncols=4, figsize=(20, 16))
+    axs = axs.flatten()
+
+    silhouette_scores = []
+
+    for layer_id, ax in zip(range(13), axs):
+        data_df = retrieve_encoded_df(data_df, batch_size=32, layer_id=layer_id, normalize=True, print_ignored=False)
+        mwe_df = data_df[data_df['mwe'] == mwe].copy()
+
+        filtered_df = mwe_df[mwe_df['literal_embedding'].notna()]
+        X_C = np.array([combine_embeddings(emb1, emb2, "concatenation") for emb1, emb2 in filtered_df['literal_embedding']])
+
+        filtered_df = mwe_df[mwe_df['idiomatic_embedding'].notna()]
+        X_NC = np.array([combine_embeddings(emb1, emb2, "concatenation") for emb1, emb2 in filtered_df['idiomatic_embedding']])
+
+        X = np.vstack((X_C, X_NC))
+
+        pca = PCA(n_components=2)
+        points = pca.fit_transform(X)
+
+        kmeans = KMeans(n_clusters=2, random_state=42, n_init=20)
+        labels = kmeans.fit_predict(points)
+
+        silhouette_avg = silhouette_score(points, labels)
+        silhouette_scores.append(silhouette_avg)
+
+        ax.scatter(points[:len(X_C), 0], points[:len(X_C), 1], color='blue', label='Compositional')
+        ax.scatter(points[len(X_C):, 0], points[len(X_C):, 1], color='orange', label='Non-compositional')
+        ax.scatter(kmeans.cluster_centers_[:, 0], kmeans.cluster_centers_[:, 1], color='red', marker='x', s=100, label='Cluster Centers')
+        ax.set_xlabel('1st eigenvector')
+        ax.set_ylabel('2nd eigenvector')
+        ax.set_title(f"Layer {layer_id}")
+        ax.legend()
+
+    # Hide the frames of subplots 14, 15, and 16
+    for ax in axs[13:]:
+        ax.set_visible(False)
+
+    fig.suptitle(f"K-Means (silhouette) Clustering of '{mwe}' Embeddings Across Layers")
+    plt.tight_layout()
+    plt.savefig(f"../results/plots/K-Means (silhouette) Clustering of '{mwe}' Embeddings Across Layers.png")
+    plt.show()
+
+    return silhouette_scores
